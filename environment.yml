@@ -1,0 +1,16 @@
+name: span
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - graph-tool
+  - numpy
+  - pandas
+  - matplotlib
+  - biopython
+  - levenshtein
+  - tqdm
+  - jupyterlab
+  - pip
+  - pip:
+      - strnd

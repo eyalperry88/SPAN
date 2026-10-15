@@ -1,0 +1,17 @@
+# Data (set SPAN_DATA_ROOT; default ./orcd)
+orcd/
+*.gt
+*.gt.gz
+*.fastq
+*.fastq.gz
+
+# Python / Jupyter
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# macOS
+.DS_Store
+
+# Original unorganized code (kept locally only)
+raw_code/
