@@ -6,6 +6,7 @@ dependencies:
   - graph-tool
   - numpy
   - pandas
+  - scipy
   - matplotlib
   - biopython
   - levenshtein

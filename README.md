@@ -10,6 +10,7 @@ Proximity-graph Archiving in Nucleic acids).
 | [`pipeline/`](pipeline) | From paired-end FASTQ files to a barcode proximity graph, barcode error correction, graph filtering, and 2D reconstruction with [STRND](https://github.com/DavidFernandezBonet/STRND) |
 | [`evaluate/`](evaluate) | Compare independent reconstructions of the same graph (e.g. different STRND random seeds) to check their consistency |
 | [`decoding/`](decoding) | Turn a reconstruction into a grayscale density image and decode the bit pattern with manually placed fiducials |
+| [`sweeps/`](sweeps) | Parameter sweeps behind the supplementary figures: simulated graphs (Fig. S2) and STRND parameters (Figs. S3–S4) |
 
 ## Installation
 
@@ -229,6 +230,69 @@ connection.
 
 The ground-truth pattern (17 × 8, as in the paper) is set in `TRUTH_ROWS` at the top of the script;
 edit `NX`, `NY` and `TRUTH_ROWS` to decode other patterns.
+
+## `sweeps/` — Parameter sweeps (supplementary figures)
+
+| File | Supplementary figure | What it sweeps |
+|---|---|---|
+| [`cat_simulation_sweep.py`](sweeps/cat_simulation_sweep.py) | Fig. S2 | Simulated graphs: barcode minimum spacing × mean edge length |
+| [`strnd_parameter_sweep.py`](sweeps/strnd_parameter_sweep.py) | Figs. S3–S4 | STRND parameters on an experimental graph |
+
+Both write reconstructions as CSVs with `node_ID`, `x`, `y` columns (as in pipeline step 07), plus a
+summary CSV with one row per run. Runs whose output already exists are skipped, so an interrupted
+sweep can be restarted with the same command (`--overwrite` recomputes them).
+
+### Simulated graphs (Fig. S2)
+
+```bash
+cd sweeps
+python -u cat_simulation_sweep.py --output-dir cat_sweep --workers 8
+```
+
+For every combination of minimum barcode spacing (`--min-spacings`, default 1 2 3 4 5 µm) and target
+mean edge length (`--mean-edge-lengths`, default 5 10 20 40 µm), the script:
+
+1. places barcodes by Poisson-disc sampling in a 500 µm disk and splits them into two bipartite
+   classes (the same positions are reused for all edge lengths at a given spacing);
+2. adds edges between the classes with gamma-distributed lengths (mean degree 4) and keeps the LCC;
+3. writes a 12 × 12 cat pattern: for each `1` bit, removes the barcodes inside a 20 µm disc
+   (30 µm pitch), then keeps the LCC;
+4. reconstructs the graph with STRND (fixed settings: 32 embedding components, `n_neighbors` 120,
+   `min_dist` 0.5, p = q = 1, seed 42).
+
+Outputs (in `--output-dir`): one `cat12x12_..._reconstruction.csv` per run (raw STRND coordinates
+plus the bipartite class of each node) and `sweep_summary.csv` (node and edge counts, measured mean
+edge length, runtimes). Geometry and seeds can be changed with `--graph-diameter-um`,
+`--bit-diameter-um`, `--bit-pitch-um`, `--base-seed` and `--strnd-seed`. This script does not need
+graph-tool or any experimental data.
+
+### STRND parameters (Figs. S3–S4)
+
+Runs STRND many times on one experimental graph (e.g. the output of pipeline step 05), varying one
+group of parameters per stage and holding the others at the scalar arguments:
+
+| `--sweep_stage` | Swept parameters | Default grid |
+|---|---|---|
+| 1 | UMAP `n_neighbors` × `min_dist` | 10, 15, 30, 60, 120, 256 × 0.1, 0.3, 0.5, 0.75, 1.0 |
+| 2 | node embedding dimension | 16, 32, 64, 128, 256 |
+| 3 | node2vec `p` × `q` | 0.5, 0.75, 1.0, 1.5, 2.0 × the same |
+
+```bash
+cd sweeps
+python strnd_parameter_sweep.py 260921Jac M1 --suffix <SUFFIX> --sweep_stage 1
+python strnd_parameter_sweep.py 260921Jac M1 --suffix <SUFFIX> --sweep_stage 2 \
+    --umap_n_neighbors <best> --umap_min_dist <best>
+python strnd_parameter_sweep.py 260921Jac M1 --suffix <SUFFIX> --sweep_stage 3 \
+    --umap_n_neighbors <best> --umap_min_dist <best> --node_embedding_components <best>
+```
+
+Each grid can be overridden (`--sweep_umap_n_neighbors`, `--sweep_umap_min_dist`,
+`--sweep_node_embedding_components`, `--sweep_p`, `--sweep_q`). Note that the fixed defaults here
+(`--node_embedding_components 64`, `--umap_n_neighbors 15`, `--umap_min_dist 1.0`) differ from those
+of step 07. Outputs go to `scratch/<PROJECT>/`:
+`<SAMPLE>_positions_<SUFFIX>_STRND_d<dim>_nn<n>_md<min_dist>_p<p>_q<q>_rnd<seed>.csv` for each run and
+`<SAMPLE>_STRND_sweep_stage<stage>_<SUFFIX>_summary.csv`. The reconstructions can be viewed with the
+`evaluate/` and `decoding/` notebooks.
 
 ## License
 
