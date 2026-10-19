@@ -10,6 +10,7 @@ dependencies:
   - biopython
   - levenshtein
   - tqdm
+  - pillow
   - jupyterlab
   - pip
   - pip:

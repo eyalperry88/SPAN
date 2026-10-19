@@ -1,0 +1,466 @@
+<!doctype html>
+<!--
+  SPAN bit decoder. Open this file in a web browser (no server or internet needed).
+  1. Load the grayscale density PNG made by 01_export_density_image.ipynb.
+  2. Add fiducials: click a bit in the ground-truth panel, then click its center in the image (>= 3 pairs).
+  3. A lattice is fitted (affine, or quadratic with >= 6 fiducials) and each lattice site is decoded by
+     thresholding the mean pixel value inside a circle: dark (DNA-rich) -> 0, light (DNA-depleted) -> 1.
+  The ground-truth pattern is TRUTH_ROWS below (NX columns x NY rows, row 0 at the top); edit it for other patterns.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MIT Logo Density Decoder with Manual Fiducials</title>
+<style>
+  :root{--bg:#f4f6f8;--panel:#fff;--border:#d9dfe6;--ink:#1d2733;--muted:#667384;--accent:#c74412;--good:#d62728;--blue:#2b6cb0}
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0}
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;background:var(--bg);color:var(--ink)}
+  .app{display:grid;grid-template-columns:minmax(700px,1fr) 395px;gap:12px;padding:12px;height:100dvh;min-height:720px}
+  .workspace{display:grid;grid-template-columns:1fr 1fr;grid-template-rows:280px minmax(420px,1fr);gap:12px;min-width:0;min-height:0}
+  .panel,.view{background:var(--panel);border:1px solid var(--border);border-radius:12px;overflow:hidden;min-width:0}
+  .view{display:flex;flex-direction:column;min-height:0}
+  .viewHeader{padding:10px 12px;border-bottom:1px solid #edf1f4;font-size:12px;font-weight:700;color:#4d5a6d;display:flex;justify-content:space-between;align-items:center;gap:8px}
+  .canvasWrap{position:relative;flex:1;min-height:0;background:#fff}
+  canvas{display:block;width:100%;height:100%}
+  #mainView{grid-column:1 / span 2}
+  .status{position:absolute;left:12px;bottom:12px;background:rgba(255,255,255,.94);border:1px solid #e2e7eb;border-radius:7px;padding:6px 9px;font-size:12px;color:#566475;max-width:calc(100% - 24px)}
+  .side{padding:14px;overflow:auto}
+  h1{font-size:19px;margin:0 0 8px;letter-spacing:-.3px}
+  h2{font-size:13px;margin:18px 0 8px;padding-bottom:6px;border-bottom:1px solid #eceff3}
+  p,.hint{font-size:12px;line-height:1.45;color:var(--muted);margin:8px 0}
+  label{display:block;font-size:12px;font-weight:700;margin-top:10px;margin-bottom:4px}
+  input[type=file],select,input[type=range]{width:100%}
+  input[type=number],select{width:100%;padding:7px 8px;border:1px solid #cad2dc;border-radius:7px;background:#fff;font-size:12px}
+  input[type=range]{accent-color:var(--accent)}
+  button{border:1px solid #c8d0d8;background:#fff;border-radius:7px;padding:8px 10px;cursor:pointer;font-size:12px;font-weight:600}
+  button:hover:not(:disabled){background:#f5f7f9}
+  button:disabled{opacity:.45;cursor:not-allowed}
+  button.primary{background:#18202c;color:#fff;border-color:#18202c}
+  .row{display:flex;gap:8px;align-items:center;margin-top:8px}
+  .row>*{flex:1}
+  .metric{display:grid;grid-template-columns:1fr auto;gap:8px;font-size:12px;margin:6px 0}
+  .metric span{color:#627082}
+  .metric strong,.value{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
+  .histWrap{height:180px;border:1px solid #eceff3;border-radius:8px;overflow:hidden;background:#fff}
+  #histCanvas{width:100%;height:100%}
+  .fidList{max-height:175px;overflow:auto;border:1px solid #eceff3;border-radius:8px;padding:7px;background:#fafbfc;font:11px ui-monospace,SFMono-Regular,Menlo,monospace}
+  .pill{display:inline-block;padding:3px 6px;border-radius:5px;background:#fff3ea;color:#8d491e;font:11px ui-monospace,SFMono-Regular,Menlo,monospace}
+  .small{font-size:11px;color:#748294}
+  .warn{background:#fff7ed;border:1px solid #f1d6bf;border-radius:8px;padding:8px;font-size:11px;color:#8a5826;margin-top:10px;line-height:1.45}
+  @media (max-width:1100px){.app{grid-template-columns:1fr;height:auto}.workspace{grid-template-rows:240px 240px 520px;grid-template-columns:1fr}.view,.panel{min-height:0}#mainView{grid-column:auto}.side{max-height:none}}
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="workspace">
+    <div class="view">
+      <div class="viewHeader"><span>Ground truth pattern</span><span class="pill">Click a bit, then click the image</span></div>
+      <div class="canvasWrap"><canvas id="truthCanvas"></canvas></div>
+    </div>
+    <div class="view">
+      <div class="viewHeader"><span>Decoded pattern</span><span id="decodeSummary" class="small">Waiting for image / fiducials</span></div>
+      <div class="canvasWrap"><canvas id="decodedCanvas"></canvas></div>
+    </div>
+    <div class="view" id="mainView">
+      <div class="viewHeader"><span>Image with fitted lattice overlay</span><span id="fitSummary" class="small">Load an image to begin</span></div>
+      <div class="canvasWrap"><canvas id="mainCanvas"></canvas><div class="status" id="status">Load a density image. Then click a ground-truth bit and click its matching location in the image to add a fiducial.</div></div>
+    </div>
+  </div>
+
+  <div class="panel side">
+    <h1>MIT Logo Density Decoder</h1>
+    <p>Load a grayscale image, add fiducial pairs manually, fit a lattice warp, and decode the 17 × 8 MIT logo by thresholding mean pixel intensity inside each circle.</p>
+
+    <h2>1. Image</h2>
+    <label for="imageInput">Density image (JPG/PNG)</label>
+    <input id="imageInput" type="file" accept="image/*">
+    <div class="metric"><span>Image size</span><strong id="imgSize">—</strong></div>
+    <label for="imageZoom">Image zoom <span class="value" id="imageZoomValue">1.00×</span></label>
+    <input id="imageZoom" type="range" min="0" max="4" step="0.01" value="0" disabled>
+    <div class="row">
+      <button id="resetImageViewBtn" disabled>Reset image view</button>
+    </div>
+
+    <h2>2. Warp model</h2>
+    <label for="fitMode">Fit mode</label>
+    <select id="fitMode">
+      <option value="affine">Affine</option>
+      <option value="quadratic" selected>Quadratic warp</option>
+    </select>
+    <label for="lambdaLog">Quadratic regularization λ <span class="value" id="lambdaValue">0.0100</span></label>
+    <input id="lambdaLog" type="range" min="-6" max="2" step="0.25" value="-2">
+    <div class="metric"><span>Fiducials paired</span><strong id="nFid">0</strong></div>
+    <div class="metric"><span>Fit RMSE</span><strong id="fitRmse">—</strong></div>
+    <div class="metric"><span>Mean lattice pitch</span><strong id="pitchMean">—</strong></div>
+
+    <h2>3. Circle sampling</h2>
+    <label for="circleRatio">Circle diameter / local pitch <span class="value" id="circleRatioValue">0.60</span></label>
+    <input id="circleRatio" type="range" min="0.15" max="1.20" step="0.01" value="0.60">
+    <div class="metric"><span>Mean circle diameter</span><strong id="circleDiameter">—</strong></div>
+
+    <label for="threshold">Threshold on mean pixel value <span class="value" id="thresholdValue">128</span></label>
+    <input id="threshold" type="range" min="0" max="255" step="1" value="128" disabled>
+    <p>Circles with mean pixel value <strong>&lt; threshold</strong> decode as <strong>0</strong>. Values ≥ threshold decode as <strong>1</strong>.</p>
+    <div class="row">
+      <button id="autoThresholdBtn">Auto threshold</button>
+      <button id="resetThresholdBtn">Reset 128</button>
+    </div>
+
+    <h2>4. Histogram</h2>
+    <div class="histWrap"><canvas id="histCanvas"></canvas></div>
+    <div class="metric"><span>Min / max circle mean</span><strong id="meanRange">—</strong></div>
+
+    <h2>5. Fiducials</h2>
+    <p>Select a truth bit in the top-left panel. Then click its corresponding center in the image. The decoder refits the lattice after every completed pair.</p>
+    <div class="metric"><span>Pending truth bit</span><strong id="pendingTruth">—</strong></div>
+    <div class="fidList" id="fidList">No fiducials yet.</div>
+    <div class="row">
+      <button id="undoBtn" disabled>Undo last</button>
+      <button id="clearBtn" disabled>Clear all</button>
+    </div>
+
+    <div class="warn">Tip: spread fiducials across the image, not only at corners. Four or more fiducials can define an affine warp. Six or more support the quadratic fit best.</div>
+  </div>
+</div>
+
+<script>
+"use strict";
+const NX=17, NY=8;
+const TRUTH_ROWS=[
+  "11011011011011111",
+  "11011011011011111",
+  "11011011000000000",
+  "11011011011011000",
+  "11011011011011000",
+  "11011011011011000",
+  "11000011011011000",
+  "11000011011011000",
+];
+const TRUTH = TRUTH_ROWS.join("").split("").map(Number);
+const truthCanvas=document.getElementById("truthCanvas");
+const decodedCanvas=document.getElementById("decodedCanvas");
+const mainCanvas=document.getElementById("mainCanvas");
+const histCanvas=document.getElementById("histCanvas");
+const truthCtx=truthCanvas.getContext("2d");
+const decodedCtx=decodedCanvas.getContext("2d");
+const mainCtx=mainCanvas.getContext("2d");
+const histCtx=histCanvas.getContext("2d");
+const $=id=>document.getElementById(id);
+
+let image=null, imgW=0, imgH=0, imgData=null;
+let mainBaseScale=1, mainZoom=1, mainPanX=0, mainPanY=0, mainOffsetX=0, mainOffsetY=0;
+let fit=null, lattice=null, localPitches=null, circleMeans=null, decoded=null, fidPred=null;
+let truthRects=[], pendingTruth=null, fidPairs=[];
+let lastFitSummary="";
+
+function resizeCanvas(canvas){
+  const rect=canvas.parentElement.getBoundingClientRect();
+  const dpr=Math.min(window.devicePixelRatio||1,2);
+  canvas.width=Math.max(1,Math.round(rect.width*dpr));
+  canvas.height=Math.max(1,Math.round(rect.height*dpr));
+  canvas.style.width=rect.width+"px";
+  canvas.style.height=rect.height+"px";
+  const ctx=canvas.getContext('2d');
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+}
+function resizeAll(){
+  resizeCanvas(truthCanvas); resizeCanvas(decodedCanvas); resizeCanvas(mainCanvas); resizeCanvas(histCanvas);
+  updateMainTransform(); drawAll();
+}
+window.addEventListener('resize',resizeAll);
+
+function setStatus(msg){ $("status").textContent=msg; }
+function currentLambda(){ return Math.pow(10, Number($("lambdaLog").value)); }
+function currentCircleRadius(i){ return localPitches ? 0.5*Number($("circleRatio").value)*localPitches[i] : 0; }
+function gridUV(x,y){ const u=(x-(NX-1)/2)/((NX-1)/2), v=(y-(NY-1)/2)/((NY-1)/2); return [u,v]; }
+function basisAffine(x,y){ const [u,v]=gridUV(x,y); return [1,u,v]; }
+function basisQuadratic(x,y){ const [u,v]=gridUV(x,y); return [1,u,v,u*u,u*v,v*v]; }
+function solveLinear(A,b){
+  const n=A.length; const M=A.map((row,i)=>row.slice().concat([b[i]]));
+  for(let col=0; col<n; col++){
+    let piv=col; for(let r=col+1;r<n;r++) if(Math.abs(M[r][col])>Math.abs(M[piv][col])) piv=r;
+    [M[col],M[piv]]=[M[piv],M[col]];
+    let d=M[col][col]; if(Math.abs(d)<1e-12) d=(d>=0?1:-1)*1e-12;
+    for(let j=col;j<=n;j++) M[col][j]/=d;
+    for(let r=0;r<n;r++) if(r!==col){ const f=M[r][col]; for(let j=col;j<=n;j++) M[r][j]-=f*M[col][j]; }
+  }
+  return M.map(row=>row[n]);
+}
+function ridgeFit(src,dst,mode,lambda){
+  const basisFn=mode==="quadratic"?basisQuadratic:basisAffine;
+  const k=mode==="quadratic"?6:3;
+  const ATA=Array.from({length:k},()=>Array(k).fill(0));
+  const bx=Array(k).fill(0), by=Array(k).fill(0);
+  for(let i=0;i<src.length;i++){
+    const phi=basisFn(src[i][0],src[i][1]);
+    for(let a=0;a<k;a++){
+      bx[a]+=phi[a]*dst[i][0]; by[a]+=phi[a]*dst[i][1];
+      for(let b=0;b<k;b++) ATA[a][b]+=phi[a]*phi[b];
+    }
+  }
+  if(mode==="quadratic"){ ATA[3][3]+=lambda; ATA[4][4]+=lambda; ATA[5][5]+=lambda; }
+  const cx=solveLinear(ATA,bx), cy=solveLinear(ATA,by);
+  function map(x,y){ const phi=basisFn(x,y); let X=0,Y=0; for(let i=0;i<k;i++){ X+=cx[i]*phi[i]; Y+=cy[i]*phi[i]; } return [X,Y]; }
+  const pred=src.map(([x,y])=>map(x,y));
+  const res=pred.map((p,i)=>Math.hypot(p[0]-dst[i][0], p[1]-dst[i][1]));
+  const rmse=Math.sqrt(res.reduce((s,r)=>s+r*r,0)/Math.max(1,res.length));
+  return {mode,lambda,map,pred,res,rmse};
+}
+function localPitchAt(x,y,mapFn){
+  const c=mapFn(x,y), d=[];
+  if(x>0){ const p=mapFn(x-1,y); d.push(Math.hypot(c[0]-p[0],c[1]-p[1])); }
+  if(x<NX-1){ const p=mapFn(x+1,y); d.push(Math.hypot(c[0]-p[0],c[1]-p[1])); }
+  if(y>0){ const p=mapFn(x,y-1); d.push(Math.hypot(c[0]-p[0],c[1]-p[1])); }
+  if(y<NY-1){ const p=mapFn(x,y+1); d.push(Math.hypot(c[0]-p[0],c[1]-p[1])); }
+  return d.reduce((a,b)=>a+b,0)/Math.max(1,d.length);
+}
+function updateImageZoomUI(){
+  $("imageZoomValue").textContent=mainZoom.toFixed(2)+"×";
+  if(document.activeElement!==$("imageZoom")) $("imageZoom").value=Math.log2(mainZoom).toFixed(2);
+}
+function currentMainScale(){ return mainBaseScale*mainZoom; }
+function updateMainTransform(){
+  if(!image){ mainBaseScale=1; mainOffsetX=0; mainOffsetY=0; return; }
+  const w=mainCanvas.clientWidth, h=mainCanvas.clientHeight;
+  mainBaseScale=Math.min(w/imgW, h/imgH);
+  mainOffsetX=(w-imgW*mainBaseScale)/2 + mainPanX;
+  mainOffsetY=(h-imgH*mainBaseScale)/2 + mainPanY;
+  updateImageZoomUI();
+}
+function mainToImage(px,py){ const s=currentMainScale(); return [(px-mainOffsetX)/s, (py-mainOffsetY)/s]; }
+function imageToMain(x,y){ const s=currentMainScale(); return [mainOffsetX+x*s, mainOffsetY+y*s]; }
+function meanPixelInCircle(cx,cy,r){
+  if(!imgData) return 255;
+  const x0=Math.max(0,Math.floor(cx-r)), x1=Math.min(imgW-1,Math.ceil(cx+r));
+  const y0=Math.max(0,Math.floor(cy-r)), y1=Math.min(imgH-1,Math.ceil(cy+r));
+  const r2=r*r; let sum=0, count=0;
+  for(let y=y0;y<=y1;y++) for(let x=x0;x<=x1;x++){
+    const dx=x+0.5-cx, dy=y+0.5-cy;
+    if(dx*dx+dy*dy<=r2){ sum += imgData[(y*imgW+x)*4]; count++; }
+  }
+  return count? sum/count : 255;
+}
+function fitLatticeIfPossible(){
+  fit=null; lattice=null; localPitches=null; circleMeans=null; decoded=null; fidPred=null;
+  if(!image || fidPairs.length<3){
+    $("fitRmse").textContent="—"; $("pitchMean").textContent="—"; $("circleDiameter").textContent="—"; $("meanRange").textContent="—";
+    $("fitSummary").textContent=fidPairs.length<3?"Need at least 3 fiducial pairs":"Load image";
+    $("decodeSummary").textContent="Waiting for fitted lattice";
+    $("threshold").disabled=true;
+    drawAll();
+    return;
+  }
+  const src=fidPairs.map(p=>[p.gx,p.gy]);
+  const dst=fidPairs.map(p=>[p.ix,p.iy]);
+  let mode=$("fitMode").value;
+  if(mode==="quadratic" && fidPairs.length<6) mode="affine";
+  fit=ridgeFit(src,dst,mode,currentLambda());
+  fidPred=fit.pred;
+  lattice=[]; localPitches=[];
+  for(let y=0;y<NY;y++) for(let x=0;x<NX;x++){ lattice.push(fit.map(x,y)); localPitches.push(localPitchAt(x,y,fit.map)); }
+  const meanPitch=localPitches.reduce((a,b)=>a+b,0)/localPitches.length;
+  $("fitRmse").textContent=fit.rmse.toFixed(3)+" px";
+  $("pitchMean").textContent=meanPitch.toFixed(2)+" px";
+  $("circleDiameter").textContent=(meanPitch*Number($("circleRatio").value)).toFixed(2)+" px";
+  $("fitSummary").textContent=`${mode==='quadratic'?'Quadratic':'Affine'} fit · ${fidPairs.length} fiducials · RMSE ${fit.rmse.toFixed(2)} px`;
+  recomputeMeans();
+}
+function recomputeMeans(){
+  if(!lattice){ circleMeans=null; decoded=null; $("threshold").disabled=true; drawAll(); return; }
+  circleMeans=lattice.map((p,i)=>meanPixelInCircle(p[0],p[1],currentCircleRadius(i)));
+  const min=Math.min(...circleMeans), max=Math.max(...circleMeans);
+  $("meanRange").textContent=`${min.toFixed(1)} – ${max.toFixed(1)}`;
+  $("threshold").disabled=false;
+  if($("threshold").dataset.auto!=="manual"){
+    const sorted=[...circleMeans].sort((a,b)=>a-b);
+    const q25=sorted[Math.floor(0.25*(sorted.length-1))];
+    const q75=sorted[Math.floor(0.75*(sorted.length-1))];
+    $("threshold").value=Math.round(0.5*(q25+q75));
+  }
+  $("thresholdValue").textContent=$("threshold").value;
+  decode();
+}
+function decode(){
+  if(!circleMeans){ decoded=null; drawAll(); return; }
+  const th=Number($("threshold").value);
+  decoded=circleMeans.map(v=>v<th?0:1);
+  let correct=0; for(let i=0;i<decoded.length;i++) if(decoded[i]===TRUTH[i]) correct++;
+  $("decodeSummary").textContent=`${correct}/136 correct (${(100*correct/136).toFixed(1)}%)`;
+  drawAll();
+}
+function drawTruthPanel(){
+  const ctx=truthCtx, w=truthCanvas.clientWidth, h=truthCanvas.clientHeight;
+  ctx.clearRect(0,0,w,h); ctx.fillStyle="white"; ctx.fillRect(0,0,w,h);
+  const pad=22, gap=Math.min((w-2*pad)/NX,(h-2*pad)/NY), r=0.37*gap;
+  const usedW=gap*(NX-1), usedH=gap*(NY-1); const x0=(w-usedW)/2, y0=(h-usedH)/2;
+  truthRects=[];
+  for(let y=0;y<NY;y++) for(let x=0;x<NX;x++){
+    const cx=x0+x*gap, cy=y0+y*gap, idx=y*NX+x;
+    truthRects.push({x,y,cx,cy,r});
+    ctx.beginPath(); ctx.arc(cx,cy,r,0,2*Math.PI);
+    if(TRUTH[idx]){ ctx.fillStyle="#242d38"; ctx.fill(); }
+    else { ctx.fillStyle="white"; ctx.fill(); }
+    ctx.lineWidth=1.5; ctx.strokeStyle="#3e4a57"; ctx.stroke();
+  }
+  // existing fiducials
+  for(let i=0;i<fidPairs.length;i++){
+    const p=fidPairs[i], cell=truthRects[p.gy*NX+p.gx];
+    ctx.beginPath(); ctx.arc(cell.cx,cell.cy,r*0.48,0,2*Math.PI); ctx.fillStyle="#f0b400"; ctx.fill();
+    ctx.fillStyle="#6a4c00"; ctx.font="bold 11px ui-monospace,monospace"; ctx.fillText(String(i+1), cell.cx+6, cell.cy-6);
+  }
+  if(pendingTruth){
+    const cell=truthRects[pendingTruth.gy*NX+pendingTruth.gx];
+    ctx.beginPath(); ctx.arc(cell.cx,cell.cy,r*1.18,0,2*Math.PI);
+    ctx.strokeStyle="rgba(199,68,18,.95)"; ctx.lineWidth=2.5; ctx.stroke();
+  }
+}
+function drawDecodedPanel(){
+  const ctx=decodedCtx, w=decodedCanvas.clientWidth, h=decodedCanvas.clientHeight;
+  ctx.clearRect(0,0,w,h); ctx.fillStyle="white"; ctx.fillRect(0,0,w,h);
+  const pad=22, gap=Math.min((w-2*pad)/NX,(h-2*pad)/NY), r=0.37*gap;
+  const usedW=gap*(NX-1), usedH=gap*(NY-1); const x0=(w-usedW)/2, y0=(h-usedH)/2;
+  for(let y=0;y<NY;y++) for(let x=0;x<NX;x++){
+    const idx=y*NX+x, cx=x0+x*gap, cy=y0+y*gap;
+    ctx.beginPath(); ctx.arc(cx,cy,r,0,2*Math.PI);
+    // Visual comparison with ground truth; does not change decoded bit values.
+    // 1→1: black filled; 0→0: white with black outline.
+    // 0→1: red filled (false positive); 1→0: white with red outline (false negative).
+    let fill = "white", border = "#000000";
+    if(decoded){
+      const expected = TRUTH[idx], actual = decoded[idx];
+      if(expected === 1 && actual === 1) fill = "#000000";
+      else if(expected === 0 && actual === 1) fill = "#d62728";
+      else if(expected === 1 && actual === 0) border = "#d62728";
+    }
+    ctx.fillStyle=fill; ctx.fill();
+    ctx.lineWidth=1.5; ctx.strokeStyle=border; ctx.stroke();
+  }
+}
+function drawMainPanel(){
+  const ctx=mainCtx, w=mainCanvas.clientWidth, h=mainCanvas.clientHeight;
+  ctx.clearRect(0,0,w,h); ctx.fillStyle="white"; ctx.fillRect(0,0,w,h);
+  if(image){ ctx.drawImage(image, mainOffsetX, mainOffsetY, imgW*currentMainScale(), imgH*currentMainScale()); }
+  else {
+    ctx.fillStyle="#91a0b1"; ctx.textAlign="center"; ctx.font="15px -apple-system,Arial,sans-serif"; ctx.fillText("Load a grayscale density image", w/2, h/2-4); ctx.textAlign="left";
+  }
+  if(lattice && localPitches){
+    for(let i=0;i<lattice.length;i++){
+      const [cx,cy]=imageToMain(lattice[i][0], lattice[i][1]);
+      const rp=currentCircleRadius(i)*currentMainScale();
+      ctx.beginPath(); ctx.arc(cx,cy,rp,0,2*Math.PI);
+      ctx.lineWidth=1.1; ctx.strokeStyle="rgba(38,79,130,.92)"; ctx.stroke();
+    }
+  }
+  // fiducial markers in image space
+  for(let i=0;i<fidPairs.length;i++){
+    const p=fidPairs[i], [x,y]=imageToMain(p.ix,p.iy);
+    ctx.beginPath(); ctx.arc(x,y,5.5,0,2*Math.PI); ctx.fillStyle="rgba(240,180,0,.95)"; ctx.fill(); ctx.strokeStyle="#8a6500"; ctx.lineWidth=1.2; ctx.stroke();
+    ctx.fillStyle="#6a4c00"; ctx.font="bold 11px ui-monospace,monospace"; ctx.fillText(String(i+1),x+8,y-6);
+  }
+  if(fidPred){
+    for(let i=0;i<fidPairs.length;i++){
+      const a=imageToMain(fidPairs[i].ix,fidPairs[i].iy), b=imageToMain(fidPred[i][0],fidPred[i][1]);
+      ctx.strokeStyle="rgba(60,60,60,.75)"; ctx.lineWidth=1.3; ctx.beginPath(); ctx.moveTo(a[0],a[1]); ctx.lineTo(b[0],b[1]); ctx.stroke();
+      ctx.beginPath(); ctx.arc(b[0],b[1],4.2,0,2*Math.PI); ctx.fillStyle="#2ca02c"; ctx.fill();
+    }
+  }
+}
+function drawHistogram(){
+  const ctx=histCtx, w=histCanvas.clientWidth, h=histCanvas.clientHeight;
+  ctx.clearRect(0,0,w,h); ctx.fillStyle="white"; ctx.fillRect(0,0,w,h);
+  const padL=34,padR=12,padT=10,padB=24, pw=w-padL-padR, ph=h-padT-padB;
+  ctx.strokeStyle="#d8dee6"; ctx.strokeRect(padL,padT,pw,ph);
+  if(!circleMeans){
+    ctx.fillStyle="#8794a5"; ctx.textAlign='center'; ctx.font='12px -apple-system,Arial,sans-serif'; ctx.fillText('Histogram appears after lattice fitting', w/2, h/2); ctx.textAlign='left'; return;
+  }
+  const bins=32, hist=Array(bins).fill(0);
+  for(const v of circleMeans){ const k=Math.max(0,Math.min(bins-1, Math.floor(v/256*bins))); hist[k]++; }
+  const maxCount=Math.max(...hist,1);
+  ctx.fillStyle="rgba(43,108,176,.78)";
+  for(let i=0;i<bins;i++){
+    const x=padL + i*pw/bins, bw=Math.max(1,pw/bins-1), bh=hist[i]/maxCount*ph;
+    ctx.fillRect(x,padT+ph-bh,bw,bh);
+  }
+  const th=Number($("threshold").value), tx=padL + (th/255)*pw;
+  ctx.strokeStyle="#c92235"; ctx.lineWidth=2; ctx.beginPath(); ctx.moveTo(tx,padT); ctx.lineTo(tx,padT+ph); ctx.stroke();
+  ctx.fillStyle="#526174"; ctx.font="11px ui-monospace,monospace";
+  ctx.fillText("0", padL-4, h-7); ctx.fillText("255", padL+pw-20, h-7); ctx.fillText("pixel mean", padL+pw/2-28, h-7);
+}
+function drawAll(){ drawTruthPanel(); drawDecodedPanel(); drawMainPanel(); drawHistogram(); updateFidList(); }
+function updateFidList(){
+  $("nFid").textContent=String(fidPairs.length);
+  $("pendingTruth").textContent=pendingTruth?`(${pendingTruth.gx}, ${pendingTruth.gy})`:"—";
+  $("undoBtn").disabled=fidPairs.length===0;
+  $("clearBtn").disabled=fidPairs.length===0;
+  const list=$("fidList");
+  if(!fidPairs.length){ list.textContent='No fiducials yet.'; return; }
+  list.innerHTML=fidPairs.map((p,i)=>`${String(i+1).padStart(2,'0')}. truth (${p.gx}, ${p.gy}) → image (${p.ix.toFixed(1)}, ${p.iy.toFixed(1)})`).join('<br>');
+}
+
+truthCanvas.addEventListener('click', ev=>{
+  const rect=truthCanvas.getBoundingClientRect(); const px=ev.clientX-rect.left, py=ev.clientY-rect.top;
+  if(!truthRects.length) return;
+  let best=null, bestD=1e9;
+  for(const c of truthRects){ const d=Math.hypot(px-c.cx, py-c.cy); if(d<bestD){ bestD=d; best=c; } }
+  if(best && bestD<=best.r*1.8){ pendingTruth={gx:best.x, gy:best.y}; setStatus(`Selected truth bit (${best.x}, ${best.y}). Now click its matching location in the image.`); drawAll(); }
+});
+mainCanvas.addEventListener('click', ev=>{
+  if(!image){ setStatus('Load an image first.'); return; }
+  if(!pendingTruth){ setStatus('First click a ground-truth bit in the top-left panel.'); return; }
+  const rect=mainCanvas.getBoundingClientRect(); const px=ev.clientX-rect.left, py=ev.clientY-rect.top;
+  const [ix,iy]=mainToImage(px,py);
+  if(ix<0||iy<0||ix>imgW||iy>imgH){ setStatus('Clicked outside the image.'); return; }
+  fidPairs.push({gx:pendingTruth.gx, gy:pendingTruth.gy, ix, iy});
+  pendingTruth=null;
+  setStatus(`Added fiducial ${fidPairs.length}. Lattice refit.`);
+  fitLatticeIfPossible();
+});
+$("undoBtn").addEventListener('click', ()=>{ if(!fidPairs.length) return; fidPairs.pop(); pendingTruth=null; setStatus('Removed last fiducial.'); fitLatticeIfPossible(); });
+$("clearBtn").addEventListener('click', ()=>{ fidPairs=[]; pendingTruth=null; setStatus('Cleared all fiducials.'); fitLatticeIfPossible(); });
+$("fitMode").addEventListener('change', fitLatticeIfPossible);
+$("lambdaLog").addEventListener('input', ()=>{ $("lambdaValue").textContent=currentLambda().toExponential(2); if(fidPairs.length>=3) fitLatticeIfPossible(); });
+$("circleRatio").addEventListener('input', ()=>{ $("circleRatioValue").textContent=Number($("circleRatio").value).toFixed(2); if(localPitches){ const meanPitch=localPitches.reduce((a,b)=>a+b,0)/localPitches.length; $("circleDiameter").textContent=(meanPitch*Number($("circleRatio").value)).toFixed(2)+" px"; recomputeMeans(); } else drawAll(); });
+$("threshold").addEventListener('input', ()=>{ $("threshold").dataset.auto='manual'; $("thresholdValue").textContent=$("threshold").value; decode(); });
+$("autoThresholdBtn").addEventListener('click', ()=>{ delete $("threshold").dataset.auto; recomputeMeans(); });
+$("resetThresholdBtn").addEventListener('click', ()=>{ $("threshold").dataset.auto='manual'; $("threshold").value=128; $("thresholdValue").textContent='128'; decode(); });
+
+$("imageZoom").addEventListener('input', ()=>{ mainZoom=Math.pow(2, Number($("imageZoom").value)); updateMainTransform(); drawAll(); });
+$("resetImageViewBtn").addEventListener('click', ()=>{ mainZoom=1; mainPanX=0; mainPanY=0; updateMainTransform(); drawAll(); });
+mainCanvas.addEventListener('wheel', ev=>{
+  if(!image) return;
+  ev.preventDefault();
+  const rect=mainCanvas.getBoundingClientRect();
+  const px=ev.clientX-rect.left, py=ev.clientY-rect.top;
+  const [ix,iy]=mainToImage(px,py);
+  mainZoom *= Math.exp(-ev.deltaY*0.0013);
+  mainZoom = Math.max(0.2, Math.min(16, mainZoom));
+  const w=mainCanvas.clientWidth, h=mainCanvas.clientHeight;
+  mainBaseScale=Math.min(w/imgW, h/imgH);
+  const s=mainBaseScale*mainZoom;
+  mainPanX = px - (w-imgW*mainBaseScale)/2 - ix*s;
+  mainPanY = py - (h-imgH*mainBaseScale)/2 - iy*s;
+  updateMainTransform();
+  drawAll();
+}, {passive:false});
+$("imageInput").addEventListener('change', async ()=>{
+  const file=$("imageInput").files[0]; if(!file) return;
+  const url=URL.createObjectURL(file); const img=new Image();
+  img.onload=()=>{
+    image=img; imgW=img.naturalWidth; imgH=img.naturalHeight; $("imgSize").textContent=`${imgW} × ${imgH}`;
+    mainZoom=1; mainPanX=0; mainPanY=0; $("imageZoom").disabled=false; $("resetImageViewBtn").disabled=false; updateImageZoomUI();
+    const off=document.createElement('canvas'); off.width=imgW; off.height=imgH; const offCtx=off.getContext('2d'); offCtx.drawImage(img,0,0);
+    imgData=offCtx.getImageData(0,0,imgW,imgH).data;
+    updateMainTransform(); setStatus('Image loaded. Click a truth bit, then click its location in the image.');
+    fitLatticeIfPossible();
+  };
+  img.src=url;
+});
+
+$("lambdaValue").textContent=currentLambda().toFixed(4);
+$("circleRatioValue").textContent=Number($("circleRatio").value).toFixed(2);
+resizeAll();
+</script>
+</body>
+</html>

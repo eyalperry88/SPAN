@@ -8,6 +8,8 @@ Proximity-graph Archiving in Nucleic acids).
 | Folder | Contents |
 |---|---|
 | [`pipeline/`](pipeline) | From paired-end FASTQ files to a barcode proximity graph, barcode error correction, graph filtering, and 2D reconstruction with [STRND](https://github.com/DavidFernandezBonet/STRND) |
+| [`evaluate/`](evaluate) | Compare independent reconstructions of the same graph (e.g. different STRND random seeds) to check their consistency |
+| [`decoding/`](decoding) | Turn a reconstruction into a grayscale density image and decode the bit pattern with manually placed fiducials |
 
 ## Installation
 
@@ -166,6 +168,67 @@ The input graph must be connected (the output of step 05 or 06b is). Main option
 Output: `<SAMPLE>_positions_<SUFFIX>_STRND_d32_rnd42.csv` with one row per vertex (`node_ID`, `x`, `y`);
 `node_ID` is the vertex index in the input graph, so barcodes can be looked up with
 `g.vp["barcode"][node_ID]`.
+
+## `evaluate/` — Compare reconstructions
+
+Reconstruction algorithms such as STRND are stochastic. These notebooks evaluate a reconstruction by
+comparing several random instantiations of it (e.g. step 07 run with different `--random_state`
+values) to each other. One reconstruction is the reference: it is mapped onto a grid or a color
+scheme, and each of the others is painted with the same per-barcode scheme. Consistent
+reconstructions show the same grid or color field, up to rotation, reflection and scale.
+
+| File | Scheme |
+|---|---|
+| [`compare_reconstructions_grid.ipynb`](evaluate/compare_reconstructions_grid.ipynb) | Barcodes on a grid of lines in the reference are drawn black in every reconstruction (other barcodes blue/red by L/R class) |
+| [`compare_reconstructions_color.ipynb`](evaluate/compare_reconstructions_color.ipynb) | Every barcode is colored by its position in the reference (angle → hue, radius → saturation); the same colors are used for every reconstruction, and a color key is saved |
+
+To run: produce several reconstructions of the same graph, for example
+
+```bash
+cd pipeline
+for seed in 42 123 999; do
+  python 07_strnd_reconstruction.py 260921Jac M1 --suffix <SUFFIX> --random_state $seed
+done
+```
+
+then set `project_name`, `sample_name`, `suffix` and the list of reconstruction tags (`d32_rnd42`,
+`d32_rnd123`, …, from the step 07 file names) in the notebook and run all cells. The images are
+saved to `scratch/<PROJECT>/eval_grid/` and `scratch/<PROJECT>/eval_color/`.
+
+## `decoding/` — Decode the bit pattern
+
+| Step | File | What it does |
+|---|---|---|
+| 01 | [`01_export_density_image.ipynb`](decoding/01_export_density_image.ipynb) | Make a grayscale density image from one reconstruction |
+| 02 | [`02_decode_bits.html`](decoding/02_decode_bits.html) | Fit a lattice with manual fiducials and decode the bits against a ground-truth pattern |
+
+### 01 — Density image (notebook)
+
+Set `INPUT_CSV` to a step 07 positions CSV and run all cells. The notebook normalizes the coordinates
+(centered, central 95% scaled to [-1, 1]), optionally rotates/flips them, counts points in a square
+sliding window (`WINDOW_WIDTH_NORM`), and maps the counts to 8-bit grayscale: at or below the 10th
+percentile → white, at or above the 90th percentile → black, linear in between. It saves a borderless
+PNG plus a JSON file with the settings to `<csv folder>/density_exports/`. Rotation and flips only
+change how the image looks; the decoder's fit handles any orientation.
+
+### 02 — Bit decoder (HTML)
+
+Open `02_decode_bits.html` in a web browser; it runs locally and needs no server or internet
+connection.
+
+1. Load the PNG from step 01.
+2. Add fiducials: click a bit in the ground-truth panel, then click the matching location in the image.
+   With 3 or more pairs an affine lattice is fitted; with 6 or more, a regularized quadratic warp can be
+   used to correct distortion.
+3. Each lattice site is sampled with a circle (diameter set as a fraction of the local lattice pitch),
+   and its mean pixel value is thresholded: dark (DNA-rich) sites → 0, light (DNA-depleted, written)
+   sites → 1. The threshold defaults to the midpoint of the 25th and 75th percentiles of the site
+   means and can be adjusted using the histogram.
+4. The decoded panel compares the result with the ground truth: black/white = correct,
+   red fill = false 1, red outline = false 0, plus the number of correct bits.
+
+The ground-truth pattern (17 × 8, as in the paper) is set in `TRUTH_ROWS` at the top of the script;
+edit `NX`, `NY` and `TRUTH_ROWS` to decode other patterns.
 
 ## License
 
